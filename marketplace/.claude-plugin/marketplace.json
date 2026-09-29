@@ -1,0 +1,20 @@
+{
+  "name": "gocc2cc-local",
+  "owner": {
+    "name": "local"
+  },
+  "metadata": {
+    "description": "Local marketplace for gocc2cc — nothing is published anywhere.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "gocc2cc",
+      "source": "./gocc2cc",
+      "description": "Message passing between Claude Code sessions on this machine.",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": ["collaboration", "multi-agent", "mcp", "local"]
+    }
+  ]
+}

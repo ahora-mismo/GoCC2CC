@@ -1,0 +1,6 @@
+# Values the suites reference. Everything environment-specific lives here rather
+# than in the suites themselves.
+#
+# `binary` is overridden by run-venom.sh with an absolute path, because Venom
+# runs exec steps from the suite's directory rather than the repository root.
+binary: ../build/gocc2cc

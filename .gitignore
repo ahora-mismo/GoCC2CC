@@ -1,0 +1,6 @@
+build/
+test/venom/bin/
+test/venom/log/
+
+# local runtime state
+.claude/

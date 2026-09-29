@@ -1,0 +1,121 @@
+name: MCP surface
+description: >
+  The MCP server starts, completes the handshake, declares what it must declare,
+  and exposes the right tools with the right parameters. Nothing here needs a
+  broker running or a Claude Code session — the shim stays alive on its own, so
+  these run against the binary and nothing else.
+
+vars:
+  init: '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"venom","version":"1.0"}}}'
+  initialized: '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+
+testcases:
+- name: The server answers and declares what it needs to
+  steps:
+
+  # Each step runs the handshake itself rather than capturing the response into
+  # a variable and substituting it back. The instructions are prose and contain
+  # apostrophes, which terminate a shell string when re-substituted — a failure
+  # that looks like a broken server rather than a broken test.
+  - name: Handshake
+    type: exec
+    script: |
+      # stdin must stay open long enough for the reply: the server shuts down
+      # the moment it sees EOF, which would otherwise race the response out.
+      { printf '%s\n' '{{.init}}'; sleep 1; } | {{.binary}} mcp 2>/dev/null | grep '"id":1' | head -1
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldContainSubstring '"serverInfo"'
+    - result.systemout ShouldContainSubstring '"name":"gocc2cc"'
+
+  # Declaring this capability is what registers the notification listener. If it
+  # ever stops being announced, push stops working and nothing else changes —
+  # agents still connect, sends still succeed, only delivery goes quiet.
+  - name: The channel capability is declared
+    type: exec
+    script: |
+      RESPONSE=$( { printf '%s\n' '{{.init}}'; sleep 1; } | {{.binary}} mcp 2>/dev/null | grep '"id":1' | head -1 )
+      printf '%s' "$RESPONSE" | grep -q 'claude/channel' || { echo MISSING; exit 1; }
+      echo DECLARED
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldContainSubstring DECLARED
+
+  # A server that negotiates 2026-07-28 is silently not registered as a channel.
+  # The failure has no symptom, so it is asserted rather than trusted.
+  - name: The revision that breaks channels is not negotiated
+    type: exec
+    script: |
+      RESPONSE=$( { printf '%s\n' '{{.init}}'; sleep 1; } | {{.binary}} mcp 2>/dev/null | grep '"id":1' | head -1 )
+      VERSION=$(printf '%s' "$RESPONSE" | sed -n 's/.*"protocolVersion":"\([^"]*\)".*/\1/p')
+      echo "negotiated=$VERSION"
+      [ -n "$VERSION" ] || { echo "no protocol version in the response"; exit 1; }
+      [ "$VERSION" != "2026-07-28" ] || exit 1
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldNotContainSubstring 2026-07-28
+
+- name: The tools are the ones agents are told about
+  steps:
+
+  # Each step runs its own pipeline rather than capturing the response into a
+  # variable and substituting it back into a script. Tool descriptions are prose
+  # and contain apostrophes, which terminate a shell string when re-substituted
+  # — a failure that looks like a broken tool rather than a broken test.
+  - name: All three tools are present, and only those three
+    type: exec
+    script: |
+      TOOLS=$( { printf '%s\n%s\n%s\n' \
+          '{{.init}}' \
+          '{{.initialized}}' \
+          '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 1; } \
+        | {{.binary}} mcp 2>/dev/null | grep '"id":2' | head -1 )
+
+      for TOOL in list_instances send_message connect; do
+        printf '%s' "$TOOLS" | grep -q "\"name\":\"$TOOL\"" || { echo "MISSING: $TOOL"; exit 1; }
+      done
+
+      # No tool may exist that the skill never told agents about.
+      TOTAL=$(printf '%s' "$TOOLS" | grep -o '"inputSchema"' | wc -l | tr -d ' ')
+      [ "$TOTAL" = "3" ] || { echo "expected 3 tools, found $TOTAL"; exit 1; }
+
+      echo TOOLS_OK
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldContainSubstring TOOLS_OK
+
+  - name: send_message takes the parameters the skill describes
+    type: exec
+    script: |
+      TOOLS=$( { printf '%s\n%s\n%s\n' \
+          '{{.init}}' \
+          '{{.initialized}}' \
+          '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 1; } \
+        | {{.binary}} mcp 2>/dev/null | grep '"id":2' | head -1 )
+
+      printf '%s' "$TOOLS" | grep -q '"to"' || { echo "send_message is missing 'to'"; exit 1; }
+      printf '%s' "$TOOLS" | grep -q '"content"' || { echo "send_message is missing 'content'"; exit 1; }
+      printf '%s' "$TOOLS" | grep -q '"topic"' || { echo "connect is missing 'topic'"; exit 1; }
+      echo PARAMS_OK
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldContainSubstring PARAMS_OK
+
+- name: Without a broker the shim stays up and says why
+  steps:
+
+  # The broker not running is an ordinary condition, not a fault: the operator
+  # may not have started it, or may have quit it mid-session. The shim must
+  # survive that and explain itself rather than failing the session.
+  - name: A tool call reports the situation instead of crashing
+    type: exec
+    script: |
+      { printf '%s\n%s\n%s\n' \
+          '{{.init}}' \
+          '{{.initialized}}' \
+          '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_instances","arguments":{}}}'; sleep 1; } \
+        | GOCC2CC_SOCKET=/nonexistent/gocc2cc.sock {{.binary}} mcp 2>/dev/null | grep '"id":3' | head -1
+    assertions:
+    - result.code ShouldEqual 0
+    - result.systemout ShouldNotBeEmpty
+    - result.systemout ShouldContainSubstring not connected

@@ -1,0 +1,13 @@
+{
+  "name": "gocc2cc",
+  "version": "__GOCC2CC_VERSION__",
+  "description": "Message passing between Claude Code sessions on this machine.",
+  "license": "MIT",
+  "keywords": [
+    "collaboration",
+    "multi-agent",
+    "mcp",
+    "local"
+  ],
+  "mcpServers": "./.mcp.json"
+}
