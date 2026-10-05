@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -39,10 +40,11 @@ func newChannelTransport(inner sdk.Transport) *channelTransport {
 
 // Connect implements sdk.Transport.
 func (t *channelTransport) Connect(ctx context.Context) (sdk.Connection, error) {
-	c, err := t.inner.Connect(ctx)
+	inner, err := t.inner.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
+	c := &noDiscoverConn{Connection: inner}
 	t.mu.Lock()
 	t.conn = c
 	t.mu.Unlock()
@@ -65,5 +67,44 @@ func (t *channelTransport) wait(ctx context.Context) (sdk.Connection, error) {
 		return t.conn, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+// discoverMethod is the probe a client sends to find out whether the server
+// speaks declinedProtocolVersion.
+const discoverMethod = "server/discover"
+
+// noDiscoverConn answers server/discover with "method not found", as a server
+// predating it would, so the probe never reaches the SDK.
+//
+// It has to. The SDK's discover handler marks the session initialized, so when
+// the client — told declinedProtocolVersion is unsupported — falls back to the
+// legacy initialize on the same connection, the SDK rejects it as a duplicate
+// and the connection fails. Claude Code shows that as "Failed to reconnect: 0".
+type noDiscoverConn struct {
+	sdk.Connection
+}
+
+// Read implements sdk.Connection.
+func (c *noDiscoverConn) Read(ctx context.Context) (jsonrpc.Message, error) {
+	for {
+		msg, err := c.Connection.Read(ctx)
+		if err != nil {
+			return nil, err
+		}
+		req, ok := msg.(*jsonrpc.Request)
+		if !ok || req.Method != discoverMethod || !req.IsCall() {
+			return msg, nil
+		}
+		resp := &jsonrpc.Response{
+			ID: req.ID,
+			Error: &jsonrpc.Error{
+				Code:    jsonrpc.CodeMethodNotFound,
+				Message: "method not found: " + discoverMethod,
+			},
+		}
+		if err := c.Connection.Write(ctx, resp); err != nil {
+			return nil, err
+		}
 	}
 }
